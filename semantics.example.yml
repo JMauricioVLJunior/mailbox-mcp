@@ -1,0 +1,34 @@
+# Mailbox semantics — teaches AI agents what YOUR mailbox means.
+# Copy to semantics.yml, adapt, and point MCP_SEMANTICS_FILE at it.
+# Everything is optional; agents get neutral defaults without this file.
+
+business_context: >
+  Mailbox of Acme Consulting (fictional example). Clients each have a folder under
+  INBOX.Clients. Messages from @acme.com are our own team. The "BigCorp" client is
+  served through the vendor ToolsInc (senders @toolsinc.example are BigCorp-related).
+
+tags:
+  Client-BigCorp: e-mails from/about the client BigCorp
+  Urgent: genuine urgency - operational blockage, critical deadline, service failure
+  Finance: invoices, payments, billing issues
+  Awaiting-Reply: someone is waiting for an answer in this thread
+  Meeting: scheduling/confirmation of meetings
+  Resolved: closed cycle, nothing left to do
+  Contains-Credentials: WARNING - plaintext password/token in the body
+
+folders:
+  "INBOX.Team": internal team discussion
+
+folder_prefixes:
+  "INBOX.Clients.": "client folder: "
+  "INBOX.Systems.": "automated service notifications: "
+
+automated_senders:
+  - "@some-newsletter.example"
+  - "billing@vendor.example"
+
+automated_subject_prefixes:
+  - "weekly report"
+
+conventions:
+  - Replies land in the original message's folder (mail client setting) or in Sent

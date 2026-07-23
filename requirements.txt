@@ -1,0 +1,12 @@
+mcp>=1.28
+imap-tools
+caldav
+cryptography
+uvicorn
+starlette
+python-dotenv
+PyYAML
+tzdata
+pypdf
+python-docx
+openpyxl

@@ -1,0 +1,6 @@
+.env
+semantics.yml
+data/
+__pycache__/
+*.pyc
+.venv/

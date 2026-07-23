@@ -1,0 +1,14 @@
+services:
+  mailbox-mcp:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MCP_BIND_HOST: 0.0.0.0
+      MCP_DATA_DIR: /data
+      MCP_SEMANTICS_FILE: /app/semantics.yml
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./data:/data
+      - ./semantics.yml:/app/semantics.yml:ro
