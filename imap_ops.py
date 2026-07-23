@@ -93,12 +93,29 @@ def _resolve_special(mb) -> dict:
         elif key in detected:
             resolved[key] = detected[key]
         else:
-            resolved[key] = next((c for c in candidates if c in names), candidates[0])
+            # None (not a guessed name that may not exist) — callers that NEED the
+            # folder raise a clear error via _require_special; queries keep working
+            resolved[key] = next((c for c in candidates if c in names), None)
     return resolved
 
 
-def _run(imap: dict, fn):
-    """Run fn(mb, special) on a pooled IMAP connection, retrying once on connection loss."""
+_SPECIAL_ENV = {"sent": "MCP_SENT_FOLDER", "trash": "MCP_TRASH_FOLDER", "drafts": "MCP_DRAFTS_FOLDER"}
+
+
+def _require_special(sp: dict, key: str) -> str:
+    folder = sp.get(key)
+    if not folder:
+        env = _SPECIAL_ENV.get(key)
+        raise ValueError(f"could not determine the {key} folder on this server"
+                         + (f"; set {env} explicitly" if env else ""))
+    return folder
+
+
+def _run(imap: dict, fn, retry: bool = True):
+    """Run fn(mb, special) on a pooled IMAP connection, retrying once on connection loss.
+    Non-idempotent operations (move/append) pass retry=False: if the connection drops
+    after the server executed but before the response arrived, a retry would duplicate
+    the action — better to fail and let the agent/user decide."""
     entry = _entry_for(imap)
     with entry.lock:
         for attempt in (1, 2):
@@ -111,7 +128,7 @@ def _run(imap: dict, fn):
                 return result
             except (imaplib.IMAP4.abort, ConnectionError, EOFError, OSError):
                 _kill(entry)
-                if attempt == 2:
+                if attempt == 2 or not retry:
                     raise
 
 
@@ -427,7 +444,7 @@ def get_thread(imap: dict, folder: str, uid: str, max_messages: int = 30,
         if all_folders:
             target = [f.name for f in mb.folder.list()]
         else:
-            target = list(dict.fromkeys([folder, sp["sent"], "INBOX"]))
+            target = [f for f in dict.fromkeys([folder, sp["sent"], "INBOX"]) if f]
 
         results = []
         for fname in target:
@@ -445,6 +462,9 @@ def get_thread(imap: dict, folder: str, uid: str, max_messages: int = 30,
 
 # ---------- intelligence ----------
 
+_PENDING_FETCH_CAP = 200  # newest messages per folder considered when hunting stalled threads
+
+
 def pending_replies(imap: dict, days_back: int = 14, folders: list = None, limit: int = 30) -> list:
     """Threads whose LAST message is from the other party (i.e. awaiting our reply)."""
     me = imap["user"].lower()
@@ -456,14 +476,15 @@ def pending_replies(imap: dict, days_back: int = 14, folders: list = None, limit
         else:
             target = [f.name for f in mb.folder.list()
                       if f.name not in (sp["trash"], sp["drafts"], sp["junk"])]
-        if sp["sent"] not in target:
+        if sp["sent"] and sp["sent"] not in target:
             target.append(sp["sent"])
 
         threads = {}
         for folder in target:
             try:
                 mb.folder.set(folder)
-                msgs = list(mb.fetch(AND(date_gte=since), mark_seen=False, bulk=True, headers_only=True))
+                msgs = list(mb.fetch(AND(date_gte=since), mark_seen=False, bulk=True,
+                                      headers_only=True, limit=_PENDING_FETCH_CAP, reverse=True))
             except Exception:
                 continue
             for m in msgs:
@@ -563,7 +584,7 @@ def move_emails(imap: dict, folder: str, uids, destination: str) -> int:
         mb.folder.set(folder)
         mb.move(uid_list, destination)
         return len(uid_list)
-    return _run(imap, fn)
+    return _run(imap, fn, retry=False)
 
 
 def delete_emails(imap: dict, folder: str, uids) -> int:
@@ -572,9 +593,9 @@ def delete_emails(imap: dict, folder: str, uids) -> int:
 
     def fn(mb, sp):
         mb.folder.set(folder)
-        mb.move(uid_list, sp["trash"])
+        mb.move(uid_list, _require_special(sp, "trash"))
         return len(uid_list)
-    return _run(imap, fn)
+    return _run(imap, fn, retry=False)
 
 
 def mark_read(imap: dict, folder: str, uids, read: bool = True) -> int:
@@ -595,14 +616,16 @@ def create_folder(imap: dict, name: str) -> str:
 
 
 def append_to_sent(imap: dict, message_bytes: bytes) -> None:
-    _run(imap, lambda mb, sp: mb.append(message_bytes, sp["sent"], dt=None, flag_set=["\\Seen"]))
+    _run(imap, lambda mb, sp: mb.append(message_bytes, _require_special(sp, "sent"),
+                                         dt=None, flag_set=["\\Seen"]), retry=False)
 
 
 def append_draft(imap: dict, message_bytes: bytes) -> str:
     def fn(mb, sp):
-        mb.append(message_bytes, sp["drafts"], dt=None, flag_set=["\\Draft", "\\Seen"])
-        return sp["drafts"]
-    return _run(imap, fn)
+        drafts = _require_special(sp, "drafts")
+        mb.append(message_bytes, drafts, dt=None, flag_set=["\\Draft", "\\Seen"])
+        return drafts
+    return _run(imap, fn, retry=False)
 
 
 def fetch_for_reply(imap: dict, folder: str, uid: str) -> dict:

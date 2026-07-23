@@ -171,11 +171,12 @@ def mailbox_guide() -> dict:
 
 
 @mcp.tool(title="Threads awaiting reply")
-def list_pending_replies(days_back: int = 14, limit: int = 30) -> list:
+def list_pending_replies(days_back: int = 14, limit: int = 30, folders: list = None) -> list:
     """Threads AWAITING REPLY: conversations whose last message is from the other party,
     with no reply from us afterwards. Humans first (automated=false), oldest first.
-    waiting_days = how long it has been stalled."""
-    return imap_ops.pending_replies(_imap(), days_back, None, limit)
+    waiting_days = how long it has been stalled. folders restricts the scan (default:
+    all except Trash/Drafts/Junk) - use it on large mailboxes for faster answers."""
+    return imap_ops.pending_replies(_imap(), days_back, folders, limit)
 
 
 @mcp.tool(title="Contact history")

@@ -10,33 +10,35 @@ import config
 
 TZ = ZoneInfo(config.TIMEZONE)
 
-_clients: dict = {}
-_lock = threading.Lock()
+_clients: dict = {}          # (base_url, user) -> {"client", "principal", "lock"}
+_registry_lock = threading.Lock()
 
 
-def _principal(cd: dict):
+def _entry(cd: dict) -> dict:
     key = (cd["base_url"], cd["user"])
-    with _lock:
+    with _registry_lock:
         entry = _clients.get(key)
         if entry is None:
             client = caldav.DAVClient(url=cd["base_url"], username=cd["user"], password=cd["password"])
-            entry = {"client": client, "principal": client.principal()}
+            entry = {"client": client, "principal": client.principal(), "lock": threading.Lock()}
             _clients[key] = entry
-        return entry["principal"]
-
-
-def _drop_cache(cd: dict) -> None:
-    with _lock:
-        _clients.pop((cd["base_url"], cd["user"]), None)
+        return entry
 
 
 def _with_principal(cd: dict, fn):
-    """Run fn(principal) on a cached connection; one retry with reconnection on error."""
-    try:
-        return fn(_principal(cd))
-    except Exception:
-        _drop_cache(cd)
-        return fn(_principal(cd))
+    """Run fn(principal) holding the per-account lock — the underlying requests.Session
+    is not thread-safe, so concurrent tool calls must not share it. One retry with a
+    fresh connection on error."""
+    entry = _entry(cd)
+    with entry["lock"]:
+        try:
+            return fn(entry["principal"])
+        except Exception:
+            with _registry_lock:
+                _clients.pop((cd["base_url"], cd["user"]), None)
+            fresh = _entry(cd)
+            with fresh["lock"]:
+                return fn(fresh["principal"])
 
 
 def _get_calendars(principal, calendar_name: str = None) -> list:
