@@ -101,6 +101,16 @@ handles that in three ways:
 - **Unblock:** or ask the host to lift the outbound-port block (e.g. Hetzner's port-25
   removal request), then use 465/587 normally.
 
+### Admin console (optional)
+
+Set `MCP_ADMIN_EMAIL` to a mailbox in your domain to enable a web console at `/admin`.
+The admin signs in with that mailbox's own password (same identity proof as users) and gets
+a short-lived, CSRF-protected session. From there they can set **branding** (logo, accent
+color, display name, service link — applied to the login page and the public landing page at
+`/`), edit the **semantics** YAML live, see **status** (IMAP/SMTP/calendar, account and token
+counts), and **revoke** any user's active sessions. The console never edits credential
+infrastructure (hosts, keys) — those stay env-only. Left unset, `/admin` returns 404.
+
 ## The semantics layer (what makes agents actually useful)
 
 Generic tools tell an agent *how* to read a mailbox. `semantics.yml` tells it *what things

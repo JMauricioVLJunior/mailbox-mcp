@@ -227,7 +227,8 @@ label {{ font-size:.85rem; color:#94a3b8; }}
 input[type=text] {{ flex:1; padding:.6rem; border-radius:6px 0 0 6px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; }}
 .suffix {{ padding:.6rem; background:#334155; border-radius:0 6px 6px 0; color:#94a3b8; font-size:.9rem; }}
 input[type=password] {{ width:100%; padding:.6rem; border-radius:6px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; box-sizing:border-box; }}
-button {{ width:100%; padding:.7rem; background:#2563eb; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer; }}
+button {{ width:100%; padding:.7rem; background:{accent}; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer; }}
+.logo {{ display:block; max-height:48px; margin:0 auto 1rem; }}
 .error {{ color:#f87171; font-size:.85rem; margin-bottom:1rem; }}
 .consent {{ background:#0b1220; border:1px solid #334155; border-radius:8px; padding:.7rem .8rem; margin-bottom:1.1rem; font-size:.82rem; line-height:1.5; }}
 .consent .dest {{ color:#fbbf24; font-weight:600; word-break:break-all; }}
@@ -236,6 +237,7 @@ button {{ width:100%; padding:.7rem; background:#2563eb; color:white; border:non
 </style></head>
 <body>
 <form method="post" action="/login">
+  {logo_html}
   <h1>Connect your {server_name} mailbox</h1>
   {consent_html}
   {error_html}
@@ -275,9 +277,21 @@ def _consent_html(login_id: str) -> str:
     )
 
 
+def _branding() -> tuple[str, str, str]:
+    """(display_name, accent color, logo <img> html) — admin/env branding, sanitized."""
+    b = store.get_branding()
+    accent = b["brand_color"] if re.match(r"^#[0-9a-fA-F]{3,8}$", b["brand_color"] or "") else "#2563eb"
+    logo = b["logo_url"] if (b["logo_url"] or "").startswith(("https://", "data:image/")) else ""
+    logo_html = f'<img class="logo" src="{html.escape(logo)}" alt="">' if logo else ""
+    return html.escape(b["display_name"]), accent, logo_html
+
+
 def _render_form(login_id: str, username: str = "", error: str = "") -> str:
+    display_name, accent, logo_html = _branding()
     return LOGIN_FORM.format(
-        server_name=html.escape(config.SERVER_NAME),
+        server_name=display_name,
+        accent=accent,
+        logo_html=logo_html,
         consent_html=_consent_html(login_id),
         error_html=f'<div class="error">{html.escape(error)}</div>' if error else "",
         login_id=html.escape(login_id),

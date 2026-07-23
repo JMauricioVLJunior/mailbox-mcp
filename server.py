@@ -5,17 +5,20 @@ OAuth flow; every tool call is resolved to that user's account. See README.md.
 """
 
 import datetime as dt
+import html
 import logging
 import os
+import re
 import socket
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
+import admin
 import caldav_ops
 import config
 import imap_ops
@@ -306,6 +309,30 @@ async def _health(request):
     return JSONResponse({"status": "ok"})
 
 
+async def _landing(request):
+    """Public, branded landing page at / — logo, name, and how to connect."""
+    b = store.get_branding()
+    accent = b["brand_color"] if re.match(r"^#[0-9a-fA-F]{3,8}$", b["brand_color"] or "") else "#2563eb"
+    logo = b["logo_url"] if (b["logo_url"] or "").startswith(("https://", "data:image/")) else ""
+    logo_html = f'<img src="{html.escape(logo)}" alt="" style="max-height:64px;margin-bottom:1.4rem">' if logo else ""
+    service = (f'<p><a href="{html.escape(b["service_url"])}" style="color:{accent}">{html.escape(b["service_url"])}</a></p>'
+               if (b["service_url"] or "").startswith(("https://", "http://")) else "")
+    name = html.escape(b["display_name"])
+    mcp_url = html.escape(config.PUBLIC_URL + "/mcp")
+    page = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{name}</title><style>
+body{{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;min-height:100vh;margin:0;align-items:center;justify-content:center;text-align:center}}
+.card{{max-width:520px;padding:2rem}} code{{background:#1e293b;padding:.2rem .4rem;border-radius:5px}}
+.url{{display:block;background:#1e293b;padding:.7rem;border-radius:8px;margin:1rem 0;word-break:break-all;border-left:3px solid {accent}}}</style></head>
+<body><div class="card">{logo_html}<h1>{name}</h1>
+<p style="color:#94a3b8">E-mail &amp; calendar for AI agents (IMAP · SMTP · CalDAV).</p>
+<p>Add a custom connector in your AI client using this URL:</p>
+<code class="url">{mcp_url}</code>
+<p style="color:#94a3b8;font-size:.9rem">Sign in with your own mailbox username and password.</p>
+{service}</div></body></html>"""
+    return HTMLResponse(page, headers={"X-Content-Type-Options": "nosniff"})
+
+
 def _check_tls(host: str, port: int, what: str, problems: list) -> None:
     try:
         with socket.create_connection((host, port), timeout=10) as sock:
@@ -354,10 +381,28 @@ def build_app():
     if not smtp_ok:  # withhold tools that cannot work; create_draft (IMAP) stays available
         mcp.remove_tool("send_email")
         mcp.remove_tool("reply_email")
+    admin.set_status({"imap": True, "smtp": smtp_ok, "calendar": _HAS_CALENDAR})
+
     app = mcp.streamable_http_app()
-    app.router.routes.insert(0, Route("/login", login_get, methods=["GET"]))
-    app.router.routes.insert(0, Route("/login", login_post, methods=["POST"]))
-    app.router.routes.insert(0, Route("/health", _health, methods=["GET"]))
+    routes = [
+        Route("/login", login_get, methods=["GET"]),
+        Route("/login", login_post, methods=["POST"]),
+        Route("/health", _health, methods=["GET"]),
+        Route("/", _landing, methods=["GET"]),
+    ]
+    if admin.enabled():  # only when MCP_ADMIN_EMAIL is set
+        routes += [
+            Route("/admin", admin.home, methods=["GET"]),
+            Route("/admin/login", admin.login_get, methods=["GET"]),
+            Route("/admin/login", admin.login_post, methods=["POST"]),
+            Route("/admin/branding", admin.save_branding, methods=["POST"]),
+            Route("/admin/semantics", admin.save_semantics, methods=["POST"]),
+            Route("/admin/revoke", admin.revoke, methods=["POST"]),
+            Route("/admin/logout", admin.logout, methods=["POST"]),
+        ]
+        print(f"[preflight] admin console enabled at /admin for {config.ADMIN_EMAIL}")
+    for r in reversed(routes):  # insert ahead of the MCP catch-all, preserving order
+        app.router.routes.insert(0, r)
     return app
 
 

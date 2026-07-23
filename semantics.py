@@ -20,6 +20,7 @@ to neutral defaults when the file is absent. Expected YAML shape (all keys optio
 """
 
 import config
+import store
 
 _DEFAULT_AUTOMATED = (
     "no-reply", "noreply", "do-not-reply", "donotreply", "mailer-daemon", "postmaster",
@@ -39,12 +40,27 @@ _DEFAULT_CONVENTIONS = [
 _cache = None
 
 
+def invalidate() -> None:
+    """Drop the cache so the next read reflects an admin edit."""
+    global _cache
+    _cache = None
+
+
 def _load() -> dict:
     global _cache
     if _cache is not None:
         return _cache
     data = {}
-    if config.SEMANTICS_FILE:
+    # an admin-set YAML override (from the console) wins over the on-disk file
+    override = None
+    try:
+        override = store.get_settings().get("semantics_yaml")
+    except Exception:
+        override = None
+    if override:
+        import yaml
+        data = yaml.safe_load(override) or {}
+    elif config.SEMANTICS_FILE:
         try:
             import yaml
             with open(config.SEMANTICS_FILE, "r", encoding="utf-8") as fh:

@@ -24,7 +24,8 @@ DATA_DIR = config.DATA_DIR
 KEY_PATH = DATA_DIR / "master.key"
 STORE_PATH = DATA_DIR / "store.enc"
 
-_EMPTY = {"accounts": {}, "oauth_clients": {}, "access_tokens": {}, "refresh_tokens": {}, "auth_codes": {}}
+_EMPTY = {"accounts": {}, "oauth_clients": {}, "access_tokens": {}, "refresh_tokens": {},
+          "auth_codes": {}, "settings": {}}
 
 _lock = threading.RLock()
 _cache = {"mtime": None, "data": None}
@@ -104,6 +105,67 @@ def _save(data: dict) -> None:
         _write_private(STORE_PATH, encrypted)
         _cache["mtime"] = STORE_PATH.stat().st_mtime_ns
         _cache["data"] = data
+
+
+# ---- settings (admin-editable: branding, semantics override) ----
+
+def get_settings() -> dict:
+    return copy.deepcopy(_load().get("settings", {}))
+
+
+def save_settings(settings: dict) -> None:
+    with _lock:
+        data = _load()
+        data["settings"] = settings
+        _save(data)
+
+
+def get_branding() -> dict:
+    """Effective branding: admin-set values override env defaults."""
+    b = _load().get("settings", {}).get("branding", {})
+    return {
+        "logo_url": b.get("logo_url") or config.LOGO_URL,
+        "brand_color": b.get("brand_color") or config.BRAND_COLOR,
+        "display_name": b.get("display_name") or config.SERVER_NAME,
+        "service_url": b.get("service_url") or config.SERVICE_URL,
+    }
+
+
+# ---- admin: status + session management ----
+
+def stats() -> dict:
+    d = _load()
+    return {"accounts": len(d["accounts"]), "clients": len(d["oauth_clients"]),
+            "access_tokens": len(d["access_tokens"]), "refresh_tokens": len(d["refresh_tokens"])}
+
+
+def list_sessions() -> list:
+    """Active OAuth sessions grouped by subject (the authenticated e-mail)."""
+    data = _load()
+    agg: dict = {}
+    for table, kind in (("access_tokens", "access"), ("refresh_tokens", "refresh")):
+        for v in data[table].values():
+            label = v.get("label", "?")
+            a = agg.setdefault(label, {"subject": label, "access": 0, "refresh": 0, "clients": set()})
+            a[kind] += 1
+            if v.get("client_id"):
+                a["clients"].add(v["client_id"])
+    return sorted(({"subject": a["subject"], "access": a["access"], "refresh": a["refresh"],
+                    "clients": sorted(a["clients"])} for a in agg.values()),
+                  key=lambda x: x["subject"])
+
+
+def revoke_subject(subject: str) -> int:
+    """Delete all access + refresh tokens for one subject (forces that user to re-login)."""
+    with _lock:
+        data = _load()
+        n = 0
+        for table in ("access_tokens", "refresh_tokens"):
+            for tok in [t for t, v in data[table].items() if v.get("label") == subject]:
+                del data[table][tok]
+                n += 1
+        _save(data)
+        return n
 
 
 # ---- accounts ----
