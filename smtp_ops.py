@@ -1,4 +1,5 @@
-"""Outbound mail: send, reply (thread-aware) and drafts. SMTP SSL, copy saved via IMAP."""
+"""Outbound mail: send, reply (thread-aware) and drafts. SMTP over implicit SSL (465) or
+STARTTLS (587), copy saved via IMAP. create_draft needs no SMTP (it is an IMAP append)."""
 
 import smtplib
 from email.message import EmailMessage
@@ -6,6 +7,37 @@ from email.utils import formataddr, make_msgid
 
 import config
 import imap_ops
+
+
+def _open_smtp(timeout: int = 30) -> smtplib.SMTP:
+    """Connect to the configured SMTP server with a verified TLS context, using implicit
+    SSL or STARTTLS per config. Caller logs in and sends. Raises on unreachable/blocked port."""
+    ctx = config.ssl_context()
+    if config.SMTP_SECURITY == "starttls":
+        smtp = smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=timeout)
+        smtp.ehlo()
+        smtp.starttls(context=ctx)
+        smtp.ehlo()
+        return smtp
+    return smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT, timeout=timeout, context=ctx)
+
+
+def smtp_reachable(timeout: int = 8) -> tuple[bool, str]:
+    """Preflight probe: can we open + TLS-negotiate SMTP? Detects a blocked outbound port
+    (e.g. hosts that block 465) WITHOUT credentials, so send tools aren't exposed if dead."""
+    detail = f"{config.SMTP_HOST}:{config.SMTP_PORT} ({config.SMTP_SECURITY})"
+    try:
+        smtp = _open_smtp(timeout=timeout)
+        try:
+            smtp.ehlo()
+        finally:
+            try:
+                smtp.quit()
+            except Exception:
+                pass
+        return True, detail
+    except Exception as exc:
+        return False, f"{detail} - {exc}"
 
 
 def _split_addrs(value) -> list:
@@ -44,8 +76,7 @@ def send_email(imap: dict, to, subject: str, body: str, cc=None, bcc=None,
     msg = _build_message(imap, to_list, cc_list, subject, body, display_name, in_reply_to, references)
 
     all_rcpts = to_list + cc_list + bcc_list
-    with smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT, timeout=30,
-                           context=config.ssl_context()) as smtp:
+    with _open_smtp() as smtp:
         smtp.login(imap["user"], imap["password"])
         smtp.send_message(msg, from_addr=imap["user"], to_addrs=all_rcpts)
 

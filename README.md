@@ -82,8 +82,24 @@ registered), timezone, explicit special-folder names, semantics file path,
 a reverse proxy).
 
 On startup the server runs a **preflight check**: static configuration is validated
-(CalDAV template, timezone) and TLS connectivity to your IMAP/SMTP hosts is tested —
-it refuses to start with a broken setup instead of exposing tools that cannot work.
+(CalDAV template, timezone) and connectivity is tested. IMAP is required — a broken IMAP
+config aborts startup. SMTP is optional and **degrades gracefully** (see below).
+
+### When the outbound SMTP port is blocked
+
+Many hosting providers (Hetzner among them) block **outbound** SMTP ports (25/465) by
+default to fight spam, so the server can't reach your mail provider to *send*. This server
+handles that in three ways:
+
+- **Alternate port/mode:** set `MCP_SMTP_PORT=587` (submission over STARTTLS) when `465`
+  (implicit SSL) is blocked — often 587 is open when 465 is not. `MCP_SMTP_SECURITY`
+  (`ssl`/`starttls`) is inferred from the port but can be set explicitly.
+- **Graceful degradation:** the preflight probes SMTP without credentials. If it's
+  unreachable, the server still starts — reading, search, calendar and **`create_draft`
+  keep working** (drafts are saved via IMAP, no SMTP needed) — and only `send_email` /
+  `reply_email` are withheld, so agents never see a send tool that would fail.
+- **Unblock:** or ask the host to lift the outbound-port block (e.g. Hetzner's port-25
+  removal request), then use 465/587 normally.
 
 ## The semantics layer (what makes agents actually useful)
 
@@ -112,11 +128,16 @@ tell them to) and start every conversation already oriented.
 - IMAP/SMTP connections use a **verified TLS context** (Python's `smtplib`/`imaplib` do not
   verify certificates by default — this server always passes an explicit context).
 - The OAuth login page proxies authentication to your IMAP server — wrong password, no access.
-  8 attempts per IP per 10 minutes, plus a global cap of 50 attempts per 10 minutes as a
-  backstop against IP spoofing. Client IP comes from `CF-Connecting-IP` or the last
-  (proxy-appended) `X-Forwarded-For` entry; set `MCP_TRUST_PROXY_HEADERS=false` when
-  there is no reverse proxy in front.
-- The login page shows **which OAuth application** is requesting access.
+  Two independent rate limiters: 8 failures per source IP and 12 per target username per
+  10 minutes (the per-username one caps brute force against one account even if the attacker
+  rotates IPs; there is no global limiter that one attacker could use to lock everyone out).
+  Client IP is taken from proxy headers only when `MCP_TRUST_PROXY_HEADERS=true` — it
+  defaults to **false** (fail-closed), so enable it only behind a trusted proxy/tunnel.
+- The login/consent page shows the **destination host** the authorization code will be sent
+  to (from the registered redirect_uri, which the client cannot forge). The app name is
+  shown but labelled self-reported, since Dynamic Client Registration lets anyone pick one.
+  The page is served with `X-Frame-Options: DENY` and a strict CSP.
+- Untrusted attachments are size-capped and zip-bomb-guarded before parsing.
 - PKCE S256 enforced; access tokens expire in 1 h; refresh tokens rotate; expired
   tokens/codes are purged automatically.
 - DNS-rebinding protection restricted to your public hostname.

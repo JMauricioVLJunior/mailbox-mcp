@@ -6,8 +6,10 @@ PKCE (S256), refresh-token rotation and revocation. Serves its own login page.
 """
 
 import html
+import re
 import secrets
 import time
+from urllib.parse import urlsplit
 
 from mcp.server.auth.provider import (
     AccessToken,
@@ -28,16 +30,19 @@ import store
 AUTH_CODE_TTL = 300
 ACCESS_TOKEN_TTL = 3600
 PENDING_TTL = 900
-MAX_LOGIN_ATTEMPTS = 8       # per IP
-MAX_GLOBAL_ATTEMPTS = 50     # across ALL IPs — backstop against spoofed-IP rotation
+MAX_LOGIN_ATTEMPTS = 8       # failures per source IP per window
+MAX_USER_ATTEMPTS = 12       # failures per TARGET username per window (IP-independent)
 ATTEMPT_WINDOW = 600         # seconds
 
 # pending authorization requests, keyed by short-lived login_id (in-memory)
 _pending: dict[str, dict] = {}
 
-# failed login attempts per IP (brute-force protection) + global window
+# failed login attempts, per source IP and per target username (brute-force protection).
+# Two independent limiters: the per-IP one stops a single host; the per-username one caps
+# attempts against any one account even if the attacker rotates/spoofs IPs. There is NO
+# global limiter — a single global counter would let anyone lock out every user at once.
 _attempts: dict[str, list] = {}
-_global_attempts: list = []
+_user_attempts: dict[str, list] = {}
 
 
 def _cleanup_pending() -> None:
@@ -47,8 +52,9 @@ def _cleanup_pending() -> None:
 
 
 def _client_ip(request: Request) -> str:
-    # The LAST X-Forwarded-For entry is the one appended by the nearest proxy — the
-    # earlier ones are client-supplied and spoofable. Direct exposure: disable trust.
+    # Proxy headers are trusted only when TRUST_PROXY_HEADERS is on (a trusted proxy sets
+    # them); otherwise they are client-supplied and spoofable, so use the socket peer.
+    # The LAST X-Forwarded-For entry is the one appended by the nearest proxy.
     if config.TRUST_PROXY_HEADERS:
         ip = (request.headers.get("cf-connecting-ip")
               or request.headers.get("x-forwarded-for", "").split(",")[-1].strip())
@@ -57,24 +63,29 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _rate_limited(ip: str) -> bool:
+def _prune(bucket: dict, key: str) -> list:
     cutoff = time.time() - ATTEMPT_WINDOW
-    _global_attempts[:] = [t for t in _global_attempts if t > cutoff]
-    if len(_global_attempts) >= MAX_GLOBAL_ATTEMPTS:
-        return True
-    attempts = [t for t in _attempts.get(ip, []) if t > cutoff]
-    _attempts[ip] = attempts
-    return len(attempts) >= MAX_LOGIN_ATTEMPTS
+    kept = [t for t in bucket.get(key, []) if t > cutoff]
+    if kept:
+        bucket[key] = kept
+    else:
+        bucket.pop(key, None)
+    return kept
 
 
-def _record_failure(ip: str) -> None:
+def _rate_limited(ip: str, username: str) -> bool:
+    return (len(_prune(_attempts, ip)) >= MAX_LOGIN_ATTEMPTS
+            or len(_prune(_user_attempts, username.lower())) >= MAX_USER_ATTEMPTS)
+
+
+def _record_failure(ip: str, username: str) -> None:
     now = time.time()
-    _global_attempts.append(now)
     _attempts.setdefault(ip, []).append(now)
-    if len(_attempts) > 1000:  # bound memory against spoofed-IP churn
-        cutoff = now - ATTEMPT_WINDOW
-        for stale in [k for k, v in _attempts.items() if not any(t > cutoff for t in v)]:
-            del _attempts[stale]
+    _user_attempts.setdefault(username.lower(), []).append(now)
+    for bucket in (_attempts, _user_attempts):  # bound memory against key churn
+        if len(bucket) > 2000:
+            for stale in [k for k in list(bucket) if not _prune(bucket, k)]:
+                bucket.pop(stale, None)
 
 
 def _client_dict_to_model(d: dict) -> OAuthClientInformationFull:
@@ -204,12 +215,15 @@ input[type=text] {{ flex:1; padding:.6rem; border-radius:6px 0 0 6px; border:1px
 input[type=password] {{ width:100%; padding:.6rem; border-radius:6px; border:1px solid #334155; background:#0f172a; color:#e2e8f0; box-sizing:border-box; }}
 button {{ width:100%; padding:.7rem; background:#2563eb; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer; }}
 .error {{ color:#f87171; font-size:.85rem; margin-bottom:1rem; }}
-.client {{ color:#94a3b8; font-size:.8rem; margin:-.6rem 0 1rem; }}
+.consent {{ background:#0b1220; border:1px solid #334155; border-radius:8px; padding:.7rem .8rem; margin-bottom:1.1rem; font-size:.82rem; line-height:1.5; }}
+.consent .dest {{ color:#fbbf24; font-weight:600; word-break:break-all; }}
+.consent .name {{ color:#e2e8f0; }}
+.consent .muted {{ color:#64748b; }}
 </style></head>
 <body>
 <form method="post" action="/login">
   <h1>Connect your {server_name} mailbox</h1>
-  {client_html}
+  {consent_html}
   {error_html}
   <input type="hidden" name="login_id" value="{login_id}">
   <label>Username</label>
@@ -227,21 +241,30 @@ button {{ width:100%; padding:.7rem; background:#2563eb; color:white; border:non
 """
 
 
-def _requesting_client(login_id: str) -> str:
-    """Human-readable name of the OAuth client behind this login, for the consent page."""
+def _consent_html(login_id: str) -> str:
+    """Consent box for the login page. Shows the DESTINATION HOST the authorization code
+    will be delivered to (from the registered redirect_uri, which the SDK validated and
+    the client cannot forge) — that is the anti-phishing signal. The client_name is shown
+    too but labelled self-reported, because it is attacker-controlled at registration."""
     pending = _pending.get(login_id)
     if not pending:
         return ""
     client = store.get_client(pending["client_id"]) or {}
-    return client.get("client_name") or pending["client_id"]
+    name = client.get("client_name") or pending["client_id"]
+    dest = urlsplit(pending.get("redirect_uri", "")).netloc or "(unknown)"
+    return (
+        '<div class="consent">After you sign in, access to this mailbox will be sent to '
+        f'<span class="dest">{html.escape(dest)}</span>.'
+        f'<br><span class="muted">App name (self-reported): </span>'
+        f'<span class="name">{html.escape(name)}</span>'
+        '<br><span class="muted">Only continue if you recognize that destination.</span></div>'
+    )
 
 
 def _render_form(login_id: str, username: str = "", error: str = "") -> str:
-    client_name = _requesting_client(login_id)
     return LOGIN_FORM.format(
         server_name=html.escape(config.SERVER_NAME),
-        client_html=(f'<div class="client">Access requested by: <b>{html.escape(client_name)}</b></div>'
-                     if client_name else ""),
+        consent_html=_consent_html(login_id),
         error_html=f'<div class="error">{html.escape(error)}</div>' if error else "",
         login_id=html.escape(login_id),
         username=html.escape(username),
@@ -249,11 +272,34 @@ def _render_form(login_id: str, username: str = "", error: str = "") -> str:
     )
 
 
+_EXPIRED_LINK = "Invalid or expired link. Start the connection again from your MCP client."
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9._%+-]+$")  # e-mail local-part; blocks CRLF/slash/etc.
+
+# Security headers for the login/consent page: no framing (clickjacking of the password
+# field), no referrer leak of login_id, and a CSP tight enough for this self-contained page.
+_LOGIN_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+    "Cache-Control": "no-store",
+}
+
+
+def _valid_pending(login_id: str) -> dict | None:
+    pending = _pending.get(login_id)
+    if pending is None:
+        return None
+    if time.time() - pending["created_at"] > PENDING_TTL:  # enforce TTL at point of use
+        _pending.pop(login_id, None)
+        return None
+    return pending
+
+
 async def login_get(request: Request) -> HTMLResponse:
     login_id = request.query_params.get("login_id", "")
-    if login_id not in _pending:
-        return HTMLResponse("Invalid or expired link. Start the connection again from your MCP client.", status_code=400)
-    return HTMLResponse(_render_form(login_id))
+    if _valid_pending(login_id) is None:
+        return HTMLResponse(_EXPIRED_LINK, status_code=400)
+    return HTMLResponse(_render_form(login_id), headers=_LOGIN_HEADERS)
 
 
 async def login_post(request: Request):
@@ -262,22 +308,29 @@ async def login_post(request: Request):
     username = (form.get("username") or "").strip()
     password = form.get("password") or ""
 
-    pending = _pending.get(login_id)
+    pending = _valid_pending(login_id)
     if pending is None:
-        return HTMLResponse("Invalid or expired link. Start the connection again from your MCP client.", status_code=400)
+        return HTMLResponse(_EXPIRED_LINK, status_code=400)
 
     ip = _client_ip(request)
-    if _rate_limited(ip):
+    if _rate_limited(ip, username):
         return HTMLResponse("Too many login attempts. Wait 10 minutes and try again.", status_code=429)
+
+    if not _USERNAME_RE.match(username):
+        _record_failure(ip, username)
+        return HTMLResponse(_render_form(login_id, "", "Invalid username or password."),
+                            status_code=401, headers=_LOGIN_HEADERS)
 
     email = f"{username}@{config.EMAIL_DOMAIN}"
 
     ok = imap_ops.verify_login(config.IMAP_HOST, config.IMAP_PORT, email, password)
     if not ok:
-        _record_failure(ip)
-        return HTMLResponse(_render_form(login_id, username, "Invalid username or password."), status_code=401)
+        _record_failure(ip, username)
+        return HTMLResponse(_render_form(login_id, username, "Invalid username or password."),
+                            status_code=401, headers=_LOGIN_HEADERS)
 
     _attempts.pop(ip, None)
+    _user_attempts.pop(username.lower(), None)
 
     caldav_creds = None
     if config.CALDAV_URL_TEMPLATE:

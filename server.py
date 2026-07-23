@@ -311,12 +311,13 @@ def _check_tls(host: str, port: int, what: str, problems: list) -> None:
         problems.append(f"cannot establish TLS with {what} {host}:{port} - {exc}")
 
 
-def preflight() -> None:
+def preflight() -> bool:
     """Validate configuration and provider connectivity BEFORE serving, so the MCP
-    never exposes tools that cannot work (static config errors abort in config.py)."""
+    never exposes tools that cannot work. IMAP is required (failure aborts). SMTP is
+    optional: if its outbound port is blocked/unreachable the server still runs for
+    reading and drafts, and the sending tools are withheld. Returns whether SMTP is up."""
     problems: list = []
-    _check_tls(config.IMAP_HOST, config.IMAP_PORT, "IMAP", problems)
-    _check_tls(config.SMTP_HOST, config.SMTP_PORT, "SMTP", problems)
+    _check_tls(config.IMAP_HOST, config.IMAP_PORT, "IMAP", problems)  # required
 
     if not config.PUBLIC_URL.startswith("https://"):
         print(f"[preflight] warning: MCP_PUBLIC_URL is not https ({config.PUBLIC_URL}) - "
@@ -331,14 +332,24 @@ def preflight() -> None:
         raise SystemExit("[preflight] fix the configuration above and restart "
                          "(MCP_TLS_VERIFY=false only if your mail server uses a self-signed certificate)")
 
+    smtp_ok, smtp_detail = smtp_ops.smtp_reachable()  # optional — degrade, don't abort
+    if not smtp_ok:
+        print(f"[preflight] warning: SMTP unreachable ({smtp_detail}). Sending is DISABLED; "
+              "create_draft still works (it uses IMAP). If your host blocks outbound 465, "
+              "try MCP_SMTP_PORT=587 (STARTTLS), or ask the host to unblock the port.")
+
     print(f"[preflight] ok - imap={config.IMAP_HOST}:{config.IMAP_PORT} "
-          f"smtp={config.SMTP_HOST}:{config.SMTP_PORT} "
+          f"smtp={smtp_detail if smtp_ok else 'DISABLED'} "
           f"calendar={'on' if _HAS_CALENDAR else 'off'} "
           f"tls_verify={'on' if config.TLS_VERIFY else 'OFF (insecure)'}")
+    return smtp_ok
 
 
 def build_app():
-    preflight()
+    smtp_ok = preflight()
+    if not smtp_ok:  # withhold tools that cannot work; create_draft (IMAP) stays available
+        mcp.remove_tool("send_email")
+        mcp.remove_tool("reply_email")
     app = mcp.streamable_http_app()
     app.router.routes.insert(0, Route("/login", login_get, methods=["GET"]))
     app.router.routes.insert(0, Route("/login", login_post, methods=["POST"]))

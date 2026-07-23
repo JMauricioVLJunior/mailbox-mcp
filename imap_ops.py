@@ -380,11 +380,34 @@ def _extract_text(payload: bytes, max_chars: int) -> dict:
     return {"error": "could not decode as text"}
 
 
+# Attachments come from untrusted senders and are parsed on a shared server: cap input
+# size and the decompressed size of zip-based formats (docx/xlsx) to prevent one user's
+# agent from OOM-killing the process for everyone with a decompression bomb.
+_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024       # refuse to parse payloads larger than this
+_MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024    # zip-bomb guard for docx/xlsx
+_MAX_EXTRACT_CHARS = 200_000                    # server-side ceiling on caller max_chars
+
+
+def _zip_bomb_guard(payload: bytes) -> None:
+    """docx/xlsx are ZIP archives; refuse ones whose members decompress to a huge total."""
+    import zipfile
+    from io import BytesIO
+    try:
+        with zipfile.ZipFile(BytesIO(payload)) as zf:
+            total = sum(i.file_size for i in zf.infolist())
+    except zipfile.BadZipFile:
+        return  # not a real zip — the format parser will reject it with a clear error
+    if total > _MAX_UNCOMPRESSED_BYTES:
+        raise ValueError(f"attachment expands to ~{total // (1024 * 1024)} MB uncompressed; "
+                         "refused as a possible decompression bomb")
+
+
 def get_attachment(imap: dict, folder: str, uid: str, filename: str, max_chars: int = 20000) -> dict:
     TEXT_TYPES = ("application/json", "application/xml", "application/csv", "message/rfc822")
     TEXT_EXTS = (".txt", ".csv", ".json", ".xml", ".md", ".log", ".html", ".htm", ".ics", ".eml", ".sql", ".py", ".js")
     DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    max_chars = max(0, min(max_chars, _MAX_EXTRACT_CHARS))
 
     def fn(mb, sp):
         mb.folder.set(folder)
@@ -395,13 +418,19 @@ def get_attachment(imap: dict, folder: str, uid: str, filename: str, max_chars: 
             if a.filename != filename:
                 continue
             base = {"filename": filename, "content_type": a.content_type, "size": len(a.payload)}
+            if len(a.payload) > _MAX_ATTACHMENT_BYTES:
+                return {**base, "error": f"attachment too large to read "
+                                          f"({len(a.payload) // (1024 * 1024)} MB; limit "
+                                          f"{_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB)"}
             name = filename.lower()
             try:
                 if name.endswith(".pdf") or a.content_type == "application/pdf":
                     return {**base, **_extract_pdf(a.payload, max_chars)}
                 if name.endswith(".docx") or a.content_type == DOCX_TYPE:
+                    _zip_bomb_guard(a.payload)
                     return {**base, **_extract_docx(a.payload, max_chars)}
                 if name.endswith(".xlsx") or a.content_type == XLSX_TYPE:
+                    _zip_bomb_guard(a.payload)
                     return {**base, **_extract_xlsx(a.payload, max_chars)}
                 if (a.content_type.startswith("text/") or a.content_type in TEXT_TYPES
                         or name.endswith(TEXT_EXTS)):
