@@ -5,6 +5,7 @@ OAuth flow; every tool call is resolved to that user's account. See README.md.
 """
 
 import datetime as dt
+import logging
 import os
 import socket
 
@@ -23,6 +24,8 @@ import semantics
 import smtp_ops
 import store
 from oauth_provider import login_get, login_post
+
+logger = logging.getLogger(__name__)
 
 _HAS_CALENDAR = bool(config.CALDAV_URL_TEMPLATE)
 
@@ -205,8 +208,9 @@ def daily_brief(days_back: int = 14) -> dict:
             brief["events_today"] = [e for e in events if (e["start"] or "").startswith(today.isoformat())]
             brief["events_tomorrow"] = [e for e in events
                                           if (e["start"] or "").startswith((today + dt.timedelta(days=1)).isoformat())]
-        except Exception as exc:
-            brief["calendar_error"] = str(exc)
+        except Exception:
+            logger.warning("calendar fetch failed in daily_brief", exc_info=True)
+            brief["calendar_error"] = "calendar temporarily unavailable"
     return brief
 
 
@@ -359,4 +363,5 @@ def build_app():
 
 if __name__ == "__main__":
     import uvicorn
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     uvicorn.run(build_app(), host=config.BIND_HOST, port=config.BIND_PORT)

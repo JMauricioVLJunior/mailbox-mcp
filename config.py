@@ -20,6 +20,9 @@ Optional (defaults shown):
   MCP_BIND_HOST=127.0.0.1
   MCP_BIND_PORT=8787
   MCP_DATA_DIR=<src>/data           encrypted credential store location
+  MCP_MASTER_KEY=                   Fernet key for the store; if set, the key is NOT written
+                                    to disk (keep a data-volume backup useless on its own)
+  MCP_MASTER_KEY_FILE=              path to the Fernet key, ideally OUTSIDE MCP_DATA_DIR
   MCP_TLS_VERIFY=true               verify IMAP/SMTP TLS certificates; set false ONLY for
                                     servers with self-signed certificates (insecure)
   MCP_TRUST_PROXY_HEADERS=false     trust CF-Connecting-IP / X-Forwarded-For for login
@@ -86,6 +89,8 @@ SEMANTICS_FILE = _get("MCP_SEMANTICS_FILE", "")
 BIND_HOST = _get("MCP_BIND_HOST", "127.0.0.1")
 BIND_PORT = int(_get("MCP_BIND_PORT", "8787"))
 DATA_DIR = Path(_get("MCP_DATA_DIR", str(Path(__file__).parent / "data")))
+MASTER_KEY = _get("MCP_MASTER_KEY", "")
+MASTER_KEY_FILE = _get("MCP_MASTER_KEY_FILE", "")
 
 TLS_VERIFY = _get_bool("MCP_TLS_VERIFY", "true")
 # fail-closed: only trust proxy-supplied client IPs when explicitly enabled. Enable it

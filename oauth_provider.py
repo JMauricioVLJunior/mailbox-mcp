@@ -29,6 +29,7 @@ import store
 
 AUTH_CODE_TTL = 300
 ACCESS_TOKEN_TTL = 3600
+REFRESH_TOKEN_TTL = 30 * 24 * 3600   # absolute lifetime of a refresh-token family
 PENDING_TTL = 900
 MAX_LOGIN_ATTEMPTS = 8       # failures per source IP per window
 MAX_USER_ATTEMPTS = 12       # failures per TARGET username per window (IP-independent)
@@ -146,10 +147,13 @@ class MailOAuthProvider(OAuthAuthorizationServerProvider):
 
         access_token = secrets.token_urlsafe(32)
         refresh_token = secrets.token_urlsafe(32)
-        expires_at = time.time() + ACCESS_TOKEN_TTL
+        family_id = secrets.token_urlsafe(16)      # new token family for this login
+        now = time.time()
 
-        store.save_access_token(access_token, client.client_id, authorization_code.subject, authorization_code.scopes, expires_at)
-        store.save_refresh_token(refresh_token, client.client_id, authorization_code.subject, authorization_code.scopes)
+        store.save_access_token(access_token, client.client_id, authorization_code.subject,
+                                authorization_code.scopes, now + ACCESS_TOKEN_TTL, family_id)
+        store.save_refresh_token(refresh_token, client.client_id, authorization_code.subject,
+                                 authorization_code.scopes, family_id, now + REFRESH_TOKEN_TTL)
 
         return OAuthToken(
             access_token=access_token,
@@ -159,24 +163,34 @@ class MailOAuthProvider(OAuthAuthorizationServerProvider):
             refresh_token=refresh_token,
         )
 
-    # --- refresh tokens ---
+    # --- refresh tokens (rotation + reuse detection) ---
 
     async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> RefreshToken | None:
         entry = store.get_refresh_token(refresh_token)
         if entry is None or entry["client_id"] != client.client_id:
             return None
-        return RefreshToken(token=refresh_token, client_id=entry["client_id"], scopes=entry["scopes"], subject=entry["label"])
+        if entry.get("used_at"):
+            # already rotated — presenting it again means it leaked; burn the whole family
+            store.revoke_family(entry.get("family_id"))
+            return None
+        expires_at = entry.get("expires_at")
+        return RefreshToken(token=refresh_token, client_id=entry["client_id"], scopes=entry["scopes"],
+                            subject=entry["label"], expires_at=int(expires_at) if expires_at else None)
 
     async def exchange_refresh_token(self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list) -> OAuthToken:
-        store.delete_refresh_token(refresh_token.token)
+        entry = store.get_refresh_token(refresh_token.token) or {}
+        family_id = entry.get("family_id") or secrets.token_urlsafe(16)
+        store.mark_refresh_token_used(refresh_token.token)   # keep as reuse tripwire, don't delete
 
         new_access = secrets.token_urlsafe(32)
         new_refresh = secrets.token_urlsafe(32)
-        expires_at = time.time() + ACCESS_TOKEN_TTL
+        now = time.time()
         use_scopes = scopes or refresh_token.scopes
 
-        store.save_access_token(new_access, client.client_id, refresh_token.subject, use_scopes, expires_at)
-        store.save_refresh_token(new_refresh, client.client_id, refresh_token.subject, use_scopes)
+        store.save_access_token(new_access, client.client_id, refresh_token.subject,
+                                use_scopes, now + ACCESS_TOKEN_TTL, family_id)
+        store.save_refresh_token(new_refresh, client.client_id, refresh_token.subject,
+                                 use_scopes, family_id, now + REFRESH_TOKEN_TTL)
 
         return OAuthToken(
             access_token=new_access,

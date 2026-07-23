@@ -123,8 +123,13 @@ tell them to) and start every conversation already oriented.
 
 ## Security model
 
-- Passwords are stored only on your server, encrypted with a locally-generated Fernet key
-  (`data/master.key` + `data/store.enc`, created with mode 600). Losing them just forces re-login.
+- Passwords are stored only on your server, encrypted at rest with Fernet (`data/store.enc`,
+  mode 600). The key comes from `MCP_MASTER_KEY` / `MCP_MASTER_KEY_FILE`, or a generated
+  `data/master.key` — keep the key outside the data volume so a backup of it alone can't be
+  decrypted. Losing the key just forces re-login.
+- Refresh tokens expire (30-day family lifetime) and rotate on use, with **reuse detection**:
+  presenting an already-rotated token revokes the entire token family (a stolen token can't
+  be replayed silently).
 - IMAP/SMTP connections use a **verified TLS context** (Python's `smtplib`/`imaplib` do not
   verify certificates by default — this server always passes an explicit context).
 - The OAuth login page proxies authentication to your IMAP server — wrong password, no access.

@@ -6,6 +6,7 @@ explicit config wins, then RFC 6154 SPECIAL-USE flags, then common names.
 
 import datetime as dt
 import imaplib
+import logging
 import re
 import threading
 import time
@@ -14,6 +15,8 @@ from imap_tools import AND, MailBox
 
 import config
 import semantics
+
+logger = logging.getLogger(__name__)
 
 _IDLE_RECHECK = 60  # seconds idle after which the connection is validated before reuse
 _SOCKET_TIMEOUT = 60  # per socket operation; prevents a dead connection from hanging a tool call
@@ -435,8 +438,9 @@ def get_attachment(imap: dict, folder: str, uid: str, filename: str, max_chars: 
                 if (a.content_type.startswith("text/") or a.content_type in TEXT_TYPES
                         or name.endswith(TEXT_EXTS)):
                     return {**base, **_extract_text(a.payload, max_chars)}
-            except Exception as exc:
-                return {**base, "error": f"extraction failed: {exc}"}
+            except Exception:
+                logger.warning("attachment extraction failed for %r", filename, exc_info=True)
+                return {**base, "error": "could not read this attachment (unsupported or corrupt file)"}
             return {**base, "error": "unsupported format for direct reading (image/zip/legacy xls...) "
                                        "- supported: pdf, docx, xlsx, csv, txt, json, xml, html, ics"}
         available = [a.filename for a in msg.attachments]
