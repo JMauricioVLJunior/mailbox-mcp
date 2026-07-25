@@ -119,7 +119,7 @@ def _current_semantics_text() -> str:
     return "# business_context: >\n#   Whose mailbox this is and the business around it.\n# tags:\n#   Urgent: genuine urgency\n"
 
 
-def _console_page(csrf: str, saved: str = "", error: str = "") -> str:
+def _console_page(csrf: str, saved: str = "", error: str = "", warn: str = "") -> str:
     b = store.get_branding()
     accent = _safe_color(b["brand_color"])
     st = store.stats()
@@ -127,6 +127,8 @@ def _console_page(csrf: str, saved: str = "", error: str = "") -> str:
     banner = ""
     if saved:
         banner = f'<div style="background:#064e3b;color:#a7f3d0;padding:.6rem .8rem;border-radius:6px;margin-bottom:1rem">Saved: {html.escape(saved)}</div>'
+    if warn:
+        banner += f'<div style="background:#78350f;color:#fde68a;padding:.6rem .8rem;border-radius:6px;margin-bottom:1rem">Warnings: {html.escape(warn)}</div>'
     if error:
         banner += f'<div style="background:#7f1d1d;color:#fecaca;padding:.6rem .8rem;border-radius:6px;margin-bottom:1rem">{html.escape(error)}</div>'
 
@@ -292,6 +294,9 @@ async def save_semantics(request: Request) -> Response:
     settings["semantics_yaml"] = raw
     store.save_settings(settings)
     semantics.invalidate()
+    warnings = semantics.validate_semantics(parsed or {})
+    if warnings:  # non-fatal — saved, but flag likely mistakes (unknown keys, wrong types)
+        return _with_headers(HTMLResponse(_console_page(s["csrf"], saved="semantics", warn="; ".join(warnings))))
     return _redirect("/admin?saved=semantics")
 
 

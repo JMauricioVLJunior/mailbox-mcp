@@ -27,7 +27,8 @@ _SPECIAL_CANDIDATES = {
     "drafts": ["INBOX.Drafts", "Drafts"],
     "junk": ["INBOX.Junk", "Junk", "Spam", "INBOX.Spam"],
 }
-_SPECIAL_CONFIG = {"sent": config.SENT_FOLDER, "trash": config.TRASH_FOLDER, "drafts": config.DRAFTS_FOLDER}
+_SPECIAL_CONFIG = {"sent": config.SENT_FOLDER, "trash": config.TRASH_FOLDER,
+                    "drafts": config.DRAFTS_FOLDER, "junk": config.JUNK_FOLDER}
 
 
 class _Entry:
@@ -102,7 +103,8 @@ def _resolve_special(mb) -> dict:
     return resolved
 
 
-_SPECIAL_ENV = {"sent": "MCP_SENT_FOLDER", "trash": "MCP_TRASH_FOLDER", "drafts": "MCP_DRAFTS_FOLDER"}
+_SPECIAL_ENV = {"sent": "MCP_SENT_FOLDER", "trash": "MCP_TRASH_FOLDER",
+                "drafts": "MCP_DRAFTS_FOLDER", "junk": "MCP_JUNK_FOLDER"}
 
 
 def _require_special(sp: dict, key: str) -> str:
@@ -496,6 +498,7 @@ def get_thread(imap: dict, folder: str, uid: str, max_messages: int = 30,
 # ---------- intelligence ----------
 
 _PENDING_FETCH_CAP = 200  # newest messages per folder considered when hunting stalled threads
+_PRIORITY_RANK = {"vip": 0, "urgent": 1, "normal": 2, "automated": 3}
 
 
 def pending_replies(imap: dict, days_back: int = 14, folders: list = None, limit: int = 30) -> list:
@@ -547,18 +550,21 @@ def pending_replies(imap: dict, days_back: int = 14, folders: list = None, limit
                 age_days = (now - last["date"]).days
             except TypeError:
                 age_days = None
+            prio = semantics.priority_of(last["from"], info["subject"])
             results.append({
                 "subject": info["subject"],
                 "from": last["from"],
+                "who": semantics.who(last["from"]) or None,
                 "folder": last["folder"],
                 "folder_meaning": semantics.folder_meaning(last["folder"], sp),
                 "uid": last["uid"],
                 "date": last["date"].isoformat(),
                 "waiting_days": age_days,
-                "automated": semantics.is_automated_sender(last["from"], info["subject"]),
+                "priority": prio,
+                "automated": prio == "automated",
             })
-        # humans first (automated=False), oldest first
-        results.sort(key=lambda e: (e["automated"], e["date"]))
+        # VIP first, then urgent, then normal humans, automated last; oldest first within each
+        results.sort(key=lambda e: (_PRIORITY_RANK.get(e["priority"], 2), e["date"]))
         return results[:limit]
     return _run(imap, fn)
 
@@ -627,6 +633,39 @@ def delete_emails(imap: dict, folder: str, uids) -> int:
     def fn(mb, sp):
         mb.folder.set(folder)
         mb.move(uid_list, _require_special(sp, "trash"))
+        return len(uid_list)
+    return _run(imap, fn, retry=False)
+
+
+def mark_spam(imap: dict, folder: str, uids) -> int:
+    """Move to the Junk folder (reversible) and set $Junk best-effort (trains servers that
+    learn from the Junk folder, e.g. Rspamd/Dovecot antispam)."""
+    uid_list = _as_uid_list(uids)
+
+    def fn(mb, sp):
+        junk = _require_special(sp, "junk")
+        mb.folder.set(folder)
+        try:
+            mb.flag(uid_list, ["$Junk"], True)
+        except Exception:
+            pass
+        mb.move(uid_list, junk)
+        return len(uid_list)
+    return _run(imap, fn, retry=False)
+
+
+def not_spam(imap: dict, folder: str, uids, destination: str = "INBOX") -> int:
+    """Rescue from Junk: clear $Junk, set $NotJunk best-effort, and move back to the Inbox."""
+    uid_list = _as_uid_list(uids)
+
+    def fn(mb, sp):
+        mb.folder.set(folder)
+        for kw, on in (("$NotJunk", True), ("$Junk", False)):
+            try:
+                mb.flag(uid_list, [kw], on)
+            except Exception:
+                pass
+        mb.move(uid_list, destination)
         return len(uid_list)
     return _run(imap, fn, retry=False)
 

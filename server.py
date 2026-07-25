@@ -43,10 +43,12 @@ mcp = FastMCP(
            if _HAS_CALENDAR
            else "Day overview: daily_brief() returns unread + threads awaiting reply in one call. ")
         + "Unread: unread_summary (counts) or list_unread (messages). "
-        "Pending: list_pending_replies - prioritize items with automated=false (humans waiting). "
+        "Pending: list_pending_replies - already ordered by priority (vip/urgent first, automated last). "
+        "Follow the policies returned by mailbox_guide(). "
         "Batch actions: tag/move/delete/mark accept a list of uids at once. "
-        "delete_emails moves to Trash (reversible). send_email/reply_email really send - "
-        "confirm with the user first; when in doubt prefer create_draft (saves a draft, does not send)."
+        "delete_emails moves to Trash, mark_spam moves to Junk (both reversible). "
+        "send_email/reply_email really send - confirm with the user first; when in doubt prefer "
+        "create_draft (saves a draft, does not send)."
     ),
     auth_server_provider=oauth_provider.MailOAuthProvider(),
     auth=AuthSettings(
@@ -169,9 +171,16 @@ def mailbox_guide() -> dict:
                for f in imap_ops.list_folders(imap)]
     return {
         "business_context": semantics.business_context(),
+        "policies": semantics.policies(),
         "folders": folders,
         "special_folders": special,
+        "routing": semantics.routing(),
         "tags": semantics.tags(),
+        "entities": semantics.entities(),
+        "priorities": {"vip_senders": list(semantics.vip_senders()),
+                        "urgent_keywords": list(semantics.urgent_keywords())},
+        "allowlist": list(semantics.allowlist()),
+        "blocklist": list(semantics.blocklist()),
         "conventions": semantics.conventions(),
     }
 
@@ -262,6 +271,21 @@ def delete_emails(folder: str, uids: list) -> str:
     """Move SEVERAL e-mails to Trash - reversible, never permanently deletes."""
     n = imap_ops.delete_emails(_imap(), folder, uids)
     return f"{n} e-mail(s) moved to Trash"
+
+
+@mcp.tool(title="Mark emails as spam → Junk (reversible)")
+def mark_spam(folder: str, uids: list) -> str:
+    """Move SEVERAL e-mails to the Junk/Spam folder (reversible) and flag them $Junk so
+    servers that learn from the Junk folder can train. Use not_spam to undo."""
+    n = imap_ops.mark_spam(_imap(), folder, uids)
+    return f"{n} e-mail(s) moved to Junk"
+
+
+@mcp.tool(title="Not spam → back to Inbox")
+def not_spam(folder: str, uids: list) -> str:
+    """Rescue SEVERAL e-mails from Junk: flag $NotJunk and move them back to the Inbox."""
+    n = imap_ops.not_spam(_imap(), folder, uids)
+    return f"{n} e-mail(s) moved back to Inbox"
 
 
 @mcp.tool(title="Mark read/unread (batch)")

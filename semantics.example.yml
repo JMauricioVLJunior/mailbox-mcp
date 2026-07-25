@@ -23,6 +23,39 @@ folder_prefixes:
   "INBOX.Clients.": "client folder: "
   "INBOX.Systems.": "automated service notifications: "
 
+# Who is who: match by address or domain (longest match wins). Agents see this as "who".
+entities:
+  "@toolsinc.example": { client: BigCorp, role: vendor }
+  "cfo@bigcorp.example": { person: "Ana (CFO)", client: BigCorp, vip: true }
+
+# Triage: these bubble to the top of list_pending_replies.
+priorities:
+  vip_senders:
+    - "ceo@acme.example"
+    - "@board.acme.example"
+  urgent_keywords:
+    - contract
+    - outage
+    - overdue
+
+# Where things belong (filing hints for agents using move_emails).
+routing:
+  "invoices / billing": "INBOX.Systems.Finance"
+  "BigCorp mail": "INBOX.Clients.BigCorp"
+
+# How you want mail handled — shown to agents via mailbox_guide and followed each session.
+policies:
+  - Prefer create_draft over send_email unless the user explicitly says to send.
+  - Flag anything mentioning a contract deadline as Urgent.
+  - Never notify about newsletters; deprioritize them.
+
+# Trusted senders: never treated as automated/spam (overrides the heuristics).
+allowlist:
+  - "@acme.example"
+# Always low-priority junk.
+blocklist:
+  - "@known-spam.example"
+
 automated_senders:
   - "@some-newsletter.example"
   - "billing@vendor.example"

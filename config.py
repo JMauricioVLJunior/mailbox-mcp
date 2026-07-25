@@ -15,6 +15,7 @@ Optional (defaults shown):
   MCP_SENT_FOLDER=                  empty = autodetect (RFC 6154 SPECIAL-USE, then common names)
   MCP_TRASH_FOLDER=
   MCP_DRAFTS_FOLDER=
+  MCP_JUNK_FOLDER=                  spam/junk folder (empty = autodetect); used by mark_spam
   MCP_SEMANTICS_FILE=               path to semantics.yml (mailbox meaning for AI agents)
   MCP_SERVER_NAME=Mailbox MCP
   MCP_BIND_HOST=127.0.0.1
@@ -88,6 +89,7 @@ except Exception:
 SENT_FOLDER = _get("MCP_SENT_FOLDER", "")
 TRASH_FOLDER = _get("MCP_TRASH_FOLDER", "")
 DRAFTS_FOLDER = _get("MCP_DRAFTS_FOLDER", "")
+JUNK_FOLDER = _get("MCP_JUNK_FOLDER", "")
 
 SEMANTICS_FILE = _get("MCP_SEMANTICS_FILE", "")
 

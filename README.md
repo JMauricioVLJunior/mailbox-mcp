@@ -114,10 +114,19 @@ infrastructure (hosts, keys) — those stay env-only. Left unset, `/admin` retur
 ## The semantics layer (what makes agents actually useful)
 
 Generic tools tell an agent *how* to read a mailbox. `semantics.yml` tells it *what things
-mean*: that `INBOX.Clients.BigCorp` is a client folder, that mail from `@toolsinc.example`
-relates to that client, that the `Urgent` tag means operational blockage, which senders are
-newsletters to deprioritize. Agents call `mailbox_guide()` first (the server instructions
-tell them to) and start every conversation already oriented.
+mean* — and drives triage, not just description:
+
+- **`folders` / `folder_prefixes`** — what each folder is (`INBOX.Clients.BigCorp` is a client folder).
+- **`entities`** — who is who: address/domain → person, role, client, `vip`. Surfaced as `who`.
+- **`priorities`** — `vip_senders` and `urgent_keywords` reorder `list_pending_replies`
+  (vip → urgent → normal humans → automated), so what matters surfaces first.
+- **`policies`** — how you want mail handled (e.g. "prefer drafts"); agents follow them.
+- **`allowlist` / `blocklist`** — trusted senders never treated as automated/spam; blocked ones always low-priority.
+- **`routing`** — where things belong, as filing hints.
+- **`tags`** — what each IMAP keyword means.
+
+Agents call `mailbox_guide()` first (the server instructions tell them to) and start every
+conversation already oriented. Edit it by hand (`semantics.yml`) or live in the admin console.
 
 ## Tools
 
@@ -127,7 +136,8 @@ tell them to) and start every conversation already oriented.
 **Intelligence** — `mailbox_guide`, `daily_brief`, `list_pending_replies`, `get_contact_history`
 
 **Actions** — `send_email`, `reply_email` (thread-aware), `create_draft`, `tag_emails`,
-`move_emails`, `delete_emails` (→ Trash), `mark_read`, `create_folder` (batch where it matters)
+`move_emails`, `delete_emails` (→ Trash), `mark_spam` (→ Junk, trains $Junk) / `not_spam`
+(rescue), `mark_read`, `create_folder` (batch where it matters)
 
 **Calendar** — `list_calendars`, `list_events`, `create_event`, `delete_event`
 
