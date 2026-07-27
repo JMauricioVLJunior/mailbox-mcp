@@ -303,16 +303,38 @@ def _render_form(login_id: str, username: str = "", error: str = "") -> str:
 _EXPIRED_LINK = "Invalid or expired link. Start the connection again from your MCP client."
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._%+-]+$")  # e-mail local-part; blocks CRLF/slash/etc.
 
-# Security headers for the login/consent page: no framing (clickjacking of the password
-# field), no referrer leak of login_id, and a CSP tight enough for this self-contained page.
-_LOGIN_HEADERS = {
-    "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
-    # img-src must be explicit: default-src 'none' would otherwise block the branding logo
-    # this same page renders (both https: and data: URIs). Kept in sync with admin.py.
-    "Content-Security-Policy": "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
-    "Cache-Control": "no-store",
-}
+def _login_headers(redirect_uri: str = "") -> dict:
+    """Security headers for the login/consent page.
+
+    No framing (clickjacking of the password field), no referrer leak of login_id, and a
+    CSP tight enough for this self-contained page. Two directives need care here, and both
+    were learned the hard way:
+
+    - img-src must be explicit: default-src 'none' would otherwise block the branding
+      logo this same page renders (both https: and data: URIs). Kept in sync with admin.py.
+
+    - form-action MUST include the origin the successful login redirects to. Browsers
+      enforce form-action across the *redirect that follows* a form POST, not just the
+      POST target — so a bare 'self' silently blocks the OAuth callback: the password is
+      accepted, the server issues its 302, and the browser drops it. The user is left on
+      a dead page and never returns to the MCP client, with nothing in the server log but
+      a healthy "302 Found". The origin below comes from the pending request's
+      redirect_uri, which authorize() already validated by exact match against the
+      registered client — so this stays as tight as form-action can meaningfully be.
+    """
+    form_action = "'self'"
+    if redirect_uri:
+        parts = urlsplit(redirect_uri)
+        if parts.scheme and parts.netloc:
+            form_action += f" {parts.scheme}://{parts.netloc}"
+    return {
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy": (
+            "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; "
+            f"form-action {form_action}; frame-ancestors 'none'"),
+        "Cache-Control": "no-store",
+    }
 
 
 def _valid_pending(login_id: str) -> dict | None:
@@ -327,9 +349,11 @@ def _valid_pending(login_id: str) -> dict | None:
 
 async def login_get(request: Request) -> HTMLResponse:
     login_id = request.query_params.get("login_id", "")
-    if _valid_pending(login_id) is None:
+    pending = _valid_pending(login_id)
+    if pending is None:
         return HTMLResponse(_EXPIRED_LINK, status_code=400)
-    return HTMLResponse(_render_form(login_id), headers=_LOGIN_HEADERS)
+    return HTMLResponse(_render_form(login_id),
+                        headers=_login_headers(pending["redirect_uri"]))
 
 
 async def login_post(request: Request):
@@ -349,7 +373,7 @@ async def login_post(request: Request):
     if not _USERNAME_RE.match(username):
         _record_failure(ip, username)
         return HTMLResponse(_render_form(login_id, "", "Invalid username or password."),
-                            status_code=401, headers=_LOGIN_HEADERS)
+                            status_code=401, headers=_login_headers(pending["redirect_uri"]))
 
     email = f"{username}@{config.EMAIL_DOMAIN}"
 
@@ -357,7 +381,7 @@ async def login_post(request: Request):
     if not ok:
         _record_failure(ip, username)
         return HTMLResponse(_render_form(login_id, username, "Invalid username or password."),
-                            status_code=401, headers=_LOGIN_HEADERS)
+                            status_code=401, headers=_login_headers(pending["redirect_uri"]))
 
     _attempts.pop(ip, None)
     _user_attempts.pop(username.lower(), None)
