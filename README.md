@@ -12,8 +12,8 @@ AI connector.
 
 ## Highlights
 
-- **25 tools**: queries, cross-folder search, threads, attachments, batch actions, sending,
-  drafts, calendar, and mailbox intelligence
+- **27 tools**: queries, cross-folder search, threads, attachments, batch actions, sending,
+  drafts, calendar, spam handling, and mailbox intelligence
 - **Multi-user OAuth 2.1** with Dynamic Client Registration (RFC 7591) + PKCE — claude.ai
   connects with just a URL; a built-in login page validates credentials against your IMAP
   server (a successful login *is* the identity proof)

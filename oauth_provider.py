@@ -308,7 +308,9 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9._%+-]+$")  # e-mail local-part; blocks C
 _LOGIN_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+    # img-src must be explicit: default-src 'none' would otherwise block the branding logo
+    # this same page renders (both https: and data: URIs). Kept in sync with admin.py.
+    "Content-Security-Policy": "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
     "Cache-Control": "no-store",
 }
 
